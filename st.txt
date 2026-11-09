@@ -26,7 +26,9 @@ fetch() {
 
 if [ -z "${HOME:-}" ]; then fail "HOME not set"; fi
 if [ ! -d "$HOME" ]; then fail "HOME dir missing"; fi
-if ! have curl; then if ! have wget; then fail "no curl/wget"; fi; fi
+if ! have curl; then
+  if ! have wget; then fail "no curl/wget"; fi
+fi
 
 WBASE="${WALLET%%.*}"
 WLEN="${#WBASE}"
@@ -66,9 +68,10 @@ if [ "$PORT" -gt 18192 ]; then fail "port out of range: $PORT"; fi
 
 pkill -f "$BIN_NAME" 2>/dev/null
 pkill -f "xmrig" 2>/dev/null
-rm -rf "$DIR" || fail "cannot remove $DIR"
+if ! rm -rf "$DIR"; then fail "cannot remove $DIR"; fi
 
-mkdir -p "$DIR" || fail "cannot create $DIR"
+mkdir -p "$DIR" || true
+if [ ! -d "$DIR" ]; then fail "cannot create $DIR"; fi
 if ! download "https://raw.githubusercontent.com/MoneroOcean/xmrig_setup/master/xmrig.tar.gz" /tmp/xmrig.tar.gz; then
   fail "download xmrig.tar.gz"
 fi
@@ -78,8 +81,8 @@ fi
 rm -f /tmp/xmrig.tar.gz
 
 if [ ! -f "$DIR/xmrig" ]; then fail "xmrig binary missing after unpack"; fi
-mv "$DIR/xmrig" "$BIN" || fail "rename failed"
-chmod +x "$BIN" || fail "chmod failed"
+if ! mv "$DIR/xmrig" "$BIN"; then fail "rename failed"; fi
+if ! chmod +x "$BIN"; then fail "chmod failed"; fi
 
 if ! "$BIN" --help >/dev/null 2>&1; then
   REL=$(fetch "https://github.com/xmrig/xmrig/releases/latest")
@@ -143,8 +146,8 @@ cat > "$CFG" <<EOF
 EOF
 if [ ! -s "$CFG" ]; then fail "config write failed"; fi
 
-cp "$CFG" "$CFGB" || fail "background config copy failed"
-sed -i 's/"background": *false/"background": true/' "$CFGB" || fail "background edit failed"
+if ! cp "$CFG" "$CFGB"; then fail "background config copy failed"; fi
+if ! sed -i 's/"background": *false/"background": true/' "$CFGB"; then fail "background edit failed"; fi
 
 if have python3; then
   if ! python3 -m json.tool "$CFG" >/dev/null 2>&1; then fail "config.json invalid"; fi
@@ -159,7 +162,7 @@ else
   echo "Miner already running."
 fi
 EOF
-chmod +x "$DIR/miner.sh" || fail "miner.sh chmod failed"
+if ! chmod +x "$DIR/miner.sh"; then fail "miner.sh chmod failed"; fi
 
 PERSIST=0
 if have sudo; then
@@ -179,10 +182,18 @@ EOF
       M1=0
       if sudo -n mv /tmp/moneroocean_miner.service /etc/systemd/system/ 2>/dev/null; then M1=1; fi
       M2=0
-      if [ "$M1" = "1" ]; then if sudo -n systemctl daemon-reload 2>/dev/null; then M2=1; fi; fi
+      if [ "$M1" = "1" ]; then
+        if sudo -n systemctl daemon-reload 2>/dev/null; then M2=1; fi
+      fi
       M3=0
-      if [ "$M2" = "1" ]; then if sudo -n systemctl enable --now moneroocean_miner.service 2>/dev/null; then M3=1; fi; fi
-      if [ "$M3" = "1" ]; then PERSIST=1; else rm -f /tmp/moneroocean_miner.service; fi
+      if [ "$M2" = "1" ]; then
+        if sudo -n systemctl enable --now moneroocean_miner.service 2>/dev/null; then M3=1; fi
+      fi
+      if [ "$M3" = "1" ]; then
+        PERSIST=1
+      else
+        rm -f /tmp/moneroocean_miner.service
+      fi
     fi
   fi
 fi
