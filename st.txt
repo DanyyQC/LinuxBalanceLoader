@@ -1,4 +1,9 @@
 #!/bin/sh
+if grep -q "$(printf '\r')" "$0" 2>/dev/null; then
+  tr -d '\r' < "$0" > "$0.tmp"
+  mv "$0.tmp" "$0"
+  exec sh "$0" "$@"
+fi
 set -u
 
 WALLET="86d9KS12AnJTAVCbQcsw7G5e18ETxxVgAYyzM5d1yxxtAQXAAeAUoD6Sithghh7ookT3GNnkDX276GCRyNpPn9M4Nv2M44B"
